@@ -1,6 +1,30 @@
+/// @title MIPS
+/// @notice The MIPS contract emulates a single MIPS instruction.
+///         Note that delay slots are isolated instructions:
+///         the nextPC in the state pre-schedules where the VM jumps next.
+///         The Step input is a packed VM state, with binary-merkle-tree
+///         witness data for memory reads/writes.
+///         The Step outputs a keccak256 hash of the packed VM State,
+///         and logs the resulting state for offchain usage.
+/// @dev https://inst.eecs.berkeley.edu/~cs61c/resources/MIPS_Green_Sheet.pdf
+/// @dev https://www.cs.cmu.edu/afs/cs/academic/class/15740-f97/public/doc/mips-isa.pdf
+///      (page A-177)
+/// @dev https://uweb.engr.arizona.edu/~ece369/Resources/spim/MIPSReference.pdf
+/// @dev https://en.wikibooks.org/wiki/MIPS_Assembly/Instruction_Formats
+/// @dev https://github.com/golang/go/blob/master/src/syscall/zerrors_linux_mips.go
+///      MIPS linux kernel errors used by Go runtime
+/// @dev MIPS.sol <https://github.com/ethereum-optimism/optimism/blob/develop/packages/contracts-bedrock/src/cannon/MIPS.sol>
+/// @custom:attribution Optimism
+
+/// Checklist / Notes:
 /// - We need no function dispatch
 /// - We want to trim memory usage
 /// - Reduce dynamic operations for FV friendliness
+/// - Reduce branching, most large switch cases can be replaced with a jump table
+
+////////////////////////////////////////////////////////////////
+//                         Constants                          //
+////////////////////////////////////////////////////////////////
 
 /// @notice Start of the data segment.
 #define constant BRK_START = 0x40000000
@@ -18,73 +42,71 @@
 /// @dev TODO(clabby): Init through constant overloading
 #define constant ORACLE = 0x00
 
+////////////////////////////////////////////////////////////////
+//                  [EXTERNAL] `step` logic                   //
+////////////////////////////////////////////////////////////////
+
 ///<- Entry point
-/// equivalent to `step`
+/// equivalent to `step` in `MIPS.sol`
+/// we need no function dispatch since `step` is the only external logic.
 #define macro MAIN() = takes (0) returns (0) {
     // First, check if the elements in the calldata (state_data, proof) are large enough
     // and at the correct offsets.
     pc calldataload      // [state_data_len_offset]
     0x20 add             // [state_data_len_offset + 0x20]
-    0x64 eq iszero       // [state_data_offset != 0x64]
-    
-    0x20 calldataload    // [proof_data_len_offset, state_data_offset != 0x64]
-    0x20 add             // [proof_data_offset, state_data_offset != 0x64]
-    0x184 eq iszero      // [proof_data_offset != 0x184, state_data_offset != 0x64]
-
-    or                   // [state_data_offset != 0x64 | proof_data_offset != 0x184]
-    rev jumpi            // []
+    dup1                 // [state_data_offset, state_data_offset]
+    0x64 eq iszero       // [state_data_offset != 0x64, state_data_offset]
+    0x20 calldataload    // [proof_data_len_offset, state_data_offset != 0x64, state_data_offset]
+    0x20 add             // [proof_data_offset, state_data_offset != 0x64, state_data_offset]
+    0x184 eq iszero      // [proof_data_offset != 0x184, state_data_offset != 0x64, state_data_offset]
+    or                   // [state_data_offset != 0x64 | proof_data_offset != 0x184, state_data_offset]
+    rev jumpi            // [state_data_offset]
 
     // Load the state from calldata into memory.
-    // TODO: Cache state data offset so we don't recompute it
-    0x00                 // [mem_offset]
-    0x00 calldataload    // [state_data_len_offset, mem_offset]
-    0x20 add             // [state_data_offset, mem_offset]
-    // memory root
-    _PUT_FIELD(0x20)     // [state_data_offset, mem_offset]
-    // preimage key
-    _PUT_FIELD(0x20)     // [state_data_offset, mem_offset]
-    // preimage offset
-    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
-    // pc
-    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
-    // next pc
-    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
-    // lo
-    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
-    // hi
-    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
-    // heap
-    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
-    // exitCode
-    _PUT_FIELD(0x01)     // [state_data_offset, mem_offset]
-    // exited
-    _PUT_FIELD(0x01)     // [state_data_offset, mem_offset]
-    // step
-    _PUT_FIELD(0x08)     // [state_data_offset, mem_offset]
+    0x00                 // [mem_offset, state_data_offset]
+    swap1                // [state_data_offset, mem_offset]
+
+    //                      [state_data_offset, mem_offset]
+    _PUT_FIELD(0x20)     // memory root 
+    _PUT_FIELD(0x20)     // preimage key
+    _PUT_FIELD(0x04)     // preimage offset
+    _PUT_FIELD(0x04)     // pc
+    _PUT_FIELD(0x04)     // next pc
+    _PUT_FIELD(0x04)     // lo
+    _PUT_FIELD(0x04)     // hi
+    _PUT_FIELD(0x04)     // heap
+    _PUT_FIELD(0x01)     // exitCode
+    _PUT_FIELD(0x01)     // exited
+    _PUT_FIELD(0x08)     // step
+    //                      [state_data_offset, mem_offset]
     
     // Load our 32 registers into memory
     dup2                 // [mem_offset, state_data_offset, mem_offset]
     0x20 add             // [mem_offset + 0x20, state_data_offset, mem_offset]
     dup1                 // [mem_offset + 0x20, mem_offset + 0x20, state_data_offset, mem_offset]
-    dup4 mstore          // [mem_offset + 0x20, state_data_offset, mem_offset]
-    swap2 pop            // [state_data_offset, mem_offset]
+    swap3 mstore         // [mem_offset + 0x20, state_data_offset]
+    swap1                // [state_data_offset, mem_offset]
     0x00                 // [loop_var, state_data_offset, mem_offset]
     swap2 swap1          // [state_data_offset, mem_offset, loop_var]
     unpack:
-        // Break loop if i >= 32
-        dup3 0x1F gt     // [i > 31, state_data_offset, mem_offset, loop_var]
-        continue jumpi   // [state_data_offset, mem_offset, loop_var]
-
         // Load register into memory
         _PUT_FIELD(0x04) // [state_data_offset, mem_offset, loop_var]
 
         // Increment the loop var
         swap2 0x01 add   // [loop_var + 1, mem_offset, state_data_offset]
         swap2            // [state_data_offset, mem_offset, loop_var + 1]
-        unpack jump      // [state_data_offset, mem_offset, loop_var + 1]
 
-    continue:
-        // TODO
+        // Check if we need to continue
+        0x20 dup4 lt     // [loop_var < 0x20, state_data_offset, mem_offset, loop_var]
+        unpack jumpi     // [state_data_offset, mem_offset, loop_var]
+
+        // Post loop stack: [state_data_offset, mem_offset, loop_var]
+
+        // Clean up the stack after the loop
+        swap2 pop swap1  // [state_data_offset, mem_offset]
+
+        // TODO(clabby): Continue
+        // https://github.com/ethereum-optimism/optimism/blob/develop/packages/contracts-bedrock/src/cannon/MIPS.sol#L652
 
     rev:
         // Store the "YouPlayedYourself()" selector
@@ -93,12 +115,17 @@
         0x04 0x1C revert // <-
 }
 
+////////////////////////////////////////////////////////////////
+//                         [INTERNAL]                         //
+////////////////////////////////////////////////////////////////
+
 /// @notice Extends the value leftwards with its most significant bit (sign extension).
 /// @dev TODO(clabby): docs
 /// @param _dat
 /// @param _idx
 #define macro SE() = takes (2) returns (1) {
     // Input stack:  [_dat, _idx]
+
     dup1           // [_dat, _dat, _idx]
     0x01 dup4      // [_idx, 0x01, _dat, _dat, _idx]
     sub            // [_idx - 1, _dat, _dat, _idx]
@@ -120,8 +147,9 @@
     mul            // [is_signed ? signed : 0, _dat & mask, _dat, _idx]
     or             // [_dat & mask | (is_signed ? signed : 0), _dat, _idx]
 
-    // TODO(clabby): Come back and fix this
-    swap2 pop pop 
+    swap2 pop pop  // [_dat & mask | (is_signed ? signed : 0)]
+
+    // Exit stack:    [_dat & mask | (is_signed ? signed : 0)]
 }
 
 /// @notice Computes the offset of the proof in calldata
@@ -129,6 +157,12 @@
 /// @return offset_ The offset of the proof in the calldata.
 #define macro PROOF_OFFSET() = takes (1) returns (1) {
     // Input stack:  [_proofIndex]
+
+    // A proof of 32 bit memory, with 32-byte leaf values, is (32-5)=27 bytes32 entries.
+    // The leaf value itself needs to be encoded as well, so we get 28 bytes32s = 896 bytes.
+    // The proof offset in the calldata is 388.
+    // TODO(clabby): This offset is wrong because we don't have function selectors in this
+    //               contract. Should be 384 (0x180).
 
     0x380 mul     // [_proofIndex * 0x380]
     0x184 add     // [(_proofIndex * 0x380) + 0x184]
@@ -140,7 +174,6 @@
     cont jumpi    // [offset]
     
     // Store the "CalldataTooShort()" selector in memory and revert
-    // The calldata is too short.
     0x21bbd70f    // ["CalldataTooShort()", offset]
     0x00 mstore   // [offset]
     0x04 0x1C     // [0x1c, 0x04, offset]
@@ -153,48 +186,56 @@
 /// @notice Computes the hash of the MIPS state
 /// @return out_ The hash of the MIPS TC state.
 #define macro OUTPUT_STATE() = takes (0) returns (1) {
-    // Input stack: []
+    // Input stack:         []
 
-    // TODO(clabby): Tightly pack memory, this is way too far out.
-    0x500         // [to]
-    0x00          // [from, to]    
+    // TODO(clabby): Tightly pack memory, 0x500 is way too far out.
+    0x500                // [to]
+    0x00                 // [from, to]    
 
-    _COPY_MEM(0x20) // mem_root
-    _COPY_MEM(0x20) // preimage_key
-    _COPY_MEM(0x04) // preimage offset
-    _COPY_MEM(0x04) // pc
-    _COPY_MEM(0x04) // next pc
-    _COPY_MEM(0x04) // lo
-    _COPY_MEM(0x04) // hi
-    _COPY_MEM(0x04) // heap
-    _COPY_MEM(0x01) // exit code
-    _COPY_MEM(0x01) // exited
-    _COPY_MEM(0x08) // step
+    //                      [from, to]
+    _COPY_MEM(0x20)      // mem_root
+    _COPY_MEM(0x20)      // preimage_key
+    _COPY_MEM(0x04)      // preimage offset
+    _COPY_MEM(0x04)      // pc
+    _COPY_MEM(0x04)      // next pc
+    _COPY_MEM(0x04)      // lo
+    _COPY_MEM(0x04)      // hi
+    _COPY_MEM(0x04)      // heap
+    _COPY_MEM(0x01)      // exit code
+    _COPY_MEM(0x01)      // exited
+    _COPY_MEM(0x08)      // step
+    //                      [from, to]
 
-    // inc. from to offset to registers
-    0x20 add      // [from + 0x20, to]
+    // inc. from offset by 0x20 to reach the registers
+    0x20 add             // [from + 0x20, to]
 
     // Copy the registers into memory to hash
-    0x00          // [loop_var, from + 0x20, to]
-    swap2 swap1   // [from, to, loop_var]
+    // TODO(clabby): This always iterates 32 times. Unroll the loop
+    0x00                 // [loop_var, from, to]
+    swap2 swap1          // [from, to, loop_var]
     copy_registers:
-        dup3 0x1F gt   // [31 < loop_var, from, to, loop_var]
-        continue jumpi // [from, to, loop_var]
-
         // Copy our register into memory
-        _COPY_MEM(0x04)
+        _COPY_MEM(0x04)  // [from, to, loop_var]
 
         // Increment our loop variable
-        swap2 0x01 add // [loop_var + 1, to, from]
-        swap2          // [from, to, loop_var]
-        copy_registers jump
+        swap2 0x01 add   // [loop_var + 1, to, from]
+        swap2            // [from, to, loop_var]
+        
+        // Check if we need to continue looping, and if so, continue.
+        dup3 0x20 lt     // [0x20 < loop_var, from, to, loop_var]
+        copy_registers   // [copy_registers_jumpdest, 0x20 < loop_var, from, to, loop_var]
+        jumpi            // [from, to, loop_var]
 
-    continue:
-        // After loop stack: [from, to]
+        // Post loop stack: [from, to, loop_var]
+
+        // Clean up the stack
+        swap2 pop swap1  // [from, to]
 
         // Clean up the end of the memory
-        0x00 dup3 mstore // [from, to]
+        0x00 dup3        // [to, 0x00, from, to]
+        mstore           // [from, to]
 
+        // TODO(clabby): Tightly pack memory, 0x500 is way too far out.
         0x500            // [0x500, from, to]
         dup1             // [0x500, 0x500, from, to]
         dup4             // [to, 0x500, 0x500, from, to]
@@ -206,7 +247,7 @@
 }
 
 ////////////////////////////////////////////////////////////////
-//                          HELPERS                           //
+//                         [HELPERS]                          //
 ////////////////////////////////////////////////////////////////
 
 /// @notice Copies `size` bytes from the `from` offset in memory to the `to` offset in memory,
@@ -229,22 +270,25 @@
 
 /// @notice Puts a field from calldata into memory, copied from the given calldata offset to the
 ///         given memory offset with size `size`.
+/// @param [const] size        The size of the data to copy
+/// @param [stack] _cd_offset  The offset of the data in calldata
+/// @param [stack] _mem_offset The offset of the data in memory
 #define macro _PUT_FIELD(size) = takes (2) returns (2) {
     // Input stack:      [_cd_offset, _mem_offset]
 
-    dup1 calldataload // [cd, _cd_offset, _mem_offset]
+    dup1 calldataload // [cd[_cd_offset:_cd_offset+0x20), _cd_offset, _mem_offset]
     <size> 0x20       // [0x20, size, cd[_cd_offset:_cd_offset+0x20), _cd_offset, _mem_offset]
     sub               // [0x20 - size, cd[_cd_offset:_cd_offset+0x20), _cd_offset, _mem_offset]
     0x03 shl          // [(0x20 - size) << 3, cd[_cd_offset:_cd_offset+0x20), _cd_offset, _mem_offset]
-    shr               // [w, _cd_offset, _mem_offset]
+    shr               // [word, _cd_offset, _mem_offset]
   
-    dup3              // [_mem_offset, w, _cd_offset, _mem_offset]  
+    dup3              // [_mem_offset, word, _cd_offset, _mem_offset]  
     mstore            // [_cd_offset, _mem_offset]
 
     <size> add        // [_cd_offset + size, _mem_offset]
     swap1 0x20 add    // [_mem_offset + 0x20, _cd_offset + size]
     swap1             // [_cd_offset + size, _mem_offset + 0x20]
     
-    // Exit stack:      [_cd_offset + size, _mem_offset + 0x20]
+    // Exit stack:       [_cd_offset + size, _mem_offset + 0x20]
 }
 
