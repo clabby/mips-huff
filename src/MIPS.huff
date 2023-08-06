@@ -40,27 +40,27 @@
     0x00 calldataload    // [state_data_len_offset, mem_offset]
     0x20 add             // [state_data_offset, mem_offset]
     // memory root
-    _PUT_FIELD(32)       // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x20)     // [state_data_offset, mem_offset]
     // preimage key
-    _PUT_FIELD(32)       // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x20)     // [state_data_offset, mem_offset]
     // preimage offset
-    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
     // pc
-    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
     // next pc
-    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
     // lo
-    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
     // hi
-    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
     // heap
-    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x04)     // [state_data_offset, mem_offset]
     // exitCode
-    _PUT_FIELD(1)        // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x01)     // [state_data_offset, mem_offset]
     // exited
-    _PUT_FIELD(1)        // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x01)     // [state_data_offset, mem_offset]
     // step
-    _PUT_FIELD(8)        // [state_data_offset, mem_offset]
+    _PUT_FIELD(0x08)     // [state_data_offset, mem_offset]
     
     // Load our 32 registers into memory
     dup2                 // [mem_offset, state_data_offset, mem_offset]
@@ -76,7 +76,7 @@
         continue jumpi   // [state_data_offset, mem_offset, loop_var]
 
         // Load register into memory
-        _PUT_FIELD(4)    // [state_data_offset, mem_offset, loop_var]
+        _PUT_FIELD(0x04) // [state_data_offset, mem_offset, loop_var]
 
         // Increment the loop var
         swap2 0x01 add   // [loop_var + 1, mem_offset, state_data_offset]
@@ -159,17 +159,17 @@
     0x500         // [to]
     0x00          // [from, to]    
 
-    _COPY_MEM(32) // mem_root
-    _COPY_MEM(32) // preimage_key
-    _COPY_MEM(4)  // preimage offset
-    _COPY_MEM(4)  // pc
-    _COPY_MEM(4)  // next pc
-    _COPY_MEM(4)  // lo
-    _COPY_MEM(4)  // hi
-    _COPY_MEM(4)  // heap
-    _COPY_MEM(1)  // exit code
-    _COPY_MEM(1)  // exited
-    _COPY_MEM(8)  // step
+    _COPY_MEM(0x20) // mem_root
+    _COPY_MEM(0x20) // preimage_key
+    _COPY_MEM(0x04) // preimage offset
+    _COPY_MEM(0x04) // pc
+    _COPY_MEM(0x04) // next pc
+    _COPY_MEM(0x04) // lo
+    _COPY_MEM(0x04) // hi
+    _COPY_MEM(0x04) // heap
+    _COPY_MEM(0x01) // exit code
+    _COPY_MEM(0x01) // exited
+    _COPY_MEM(0x08) // step
 
     // inc. from to offset to registers
     0x20 add      // [from + 0x20, to]
@@ -182,7 +182,7 @@
         continue jumpi // [from, to, loop_var]
 
         // Copy our register into memory
-        _COPY_MEM(4)
+        _COPY_MEM(0x04)
 
         // Increment our loop variable
         swap2 0x01 add // [loop_var + 1, to, from]
