@@ -1,0 +1,250 @@
+/// - We need no function dispatch
+/// - We want to trim memory usage
+/// - Reduce dynamic operations for FV friendliness
+
+/// @notice Start of the data segment.
+#define constant BRK_START = 0x40000000
+
+#define constant FD_STDIN = 0x0
+#define constant FD_STDOUT = 0x01
+#define constant FD_STDERR = 0x02
+#define constant FD_HINT_READ = 0x03
+#define constant FD_HINT_WRITE = 0x04
+#define constant FD_PREIMAGE_READ = 0x05
+#define constant FD_PREIMAGE_WRITE = 0x06
+#define constant EBADF = 0x09
+#define constant EINVAL = 0x16
+
+/// @dev TODO(clabby): Init through constant overloading
+#define constant ORACLE = 0x00
+
+///<- Entry point
+/// equivalent to `step`
+#define macro MAIN() = takes (0) returns (0) {
+    // First, check if the elements in the calldata (state_data, proof) are large enough
+    // and at the correct offsets.
+    pc calldataload      // [state_data_len_offset]
+    0x20 add             // [state_data_len_offset + 0x20]
+    0x64 eq iszero       // [state_data_offset != 0x64]
+    
+    0x20 calldataload    // [proof_data_len_offset, state_data_offset != 0x64]
+    0x20 add             // [proof_data_offset, state_data_offset != 0x64]
+    0x184 eq iszero      // [proof_data_offset != 0x184, state_data_offset != 0x64]
+
+    or                   // [state_data_offset != 0x64 | proof_data_offset != 0x184]
+    rev jumpi            // []
+
+    // Load the state from calldata into memory.
+    // TODO: Cache state data offset so we don't recompute it
+    0x00                 // [mem_offset]
+    0x00 calldataload    // [state_data_len_offset, mem_offset]
+    0x20 add             // [state_data_offset, mem_offset]
+    // memory root
+    _PUT_FIELD(32)       // [state_data_offset, mem_offset]
+    // preimage key
+    _PUT_FIELD(32)       // [state_data_offset, mem_offset]
+    // preimage offset
+    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    // pc
+    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    // next pc
+    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    // lo
+    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    // hi
+    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    // heap
+    _PUT_FIELD(4)        // [state_data_offset, mem_offset]
+    // exitCode
+    _PUT_FIELD(1)        // [state_data_offset, mem_offset]
+    // exited
+    _PUT_FIELD(1)        // [state_data_offset, mem_offset]
+    // step
+    _PUT_FIELD(8)        // [state_data_offset, mem_offset]
+    
+    // Load our 32 registers into memory
+    dup2                 // [mem_offset, state_data_offset, mem_offset]
+    0x20 add             // [mem_offset + 0x20, state_data_offset, mem_offset]
+    dup1                 // [mem_offset + 0x20, mem_offset + 0x20, state_data_offset, mem_offset]
+    dup4 mstore          // [mem_offset + 0x20, state_data_offset, mem_offset]
+    swap2 pop            // [state_data_offset, mem_offset]
+    0x00                 // [loop_var, state_data_offset, mem_offset]
+    swap2 swap1          // [state_data_offset, mem_offset, loop_var]
+    unpack:
+        // Break loop if i >= 32
+        dup3 0x1F gt     // [i > 31, state_data_offset, mem_offset, loop_var]
+        continue jumpi   // [state_data_offset, mem_offset, loop_var]
+
+        // Load register into memory
+        _PUT_FIELD(4)    // [state_data_offset, mem_offset, loop_var]
+
+        // Increment the loop var
+        swap2 0x01 add   // [loop_var + 1, mem_offset, state_data_offset]
+        swap2            // [state_data_offset, mem_offset, loop_var + 1]
+        unpack jump      // [state_data_offset, mem_offset, loop_var + 1]
+
+    continue:
+        // TODO
+
+    rev:
+        // Store the "YouPlayedYourself()" selector
+        0xdd7d3867       // ["YouPlayedYourself()"]
+        0x00 mstore      // []
+        0x04 0x1C revert // <-
+}
+
+/// @notice Extends the value leftwards with its most significant bit (sign extension).
+/// @dev TODO(clabby): docs
+/// @param _dat
+/// @param _idx
+#define macro SE() = takes (2) returns (1) {
+    // Input stack:  [_dat, _idx]
+    dup1           // [_dat, _dat, _idx]
+    0x01 dup4      // [_idx, 0x01, _dat, _dat, _idx]
+    sub            // [_idx - 1, _dat, _dat, _idx]
+    shr            // [_dat >> (_idx - 1), _dat, _idx]
+    iszero iszero  // [(_dat >> (_idx - 1)) != 0, _dat, _idx]
+
+    0x01 dup1      // [0x01, 0x01, is_signed, _dat, _idx]
+    dup5 0x20 sub  // [0x20 - _idx, 0x01, 0x01, is_signed, _dat, _idx]
+    shl            // [0x01 << (0x20 - _idx), 0x01, is_signed, _dat, _idx]
+    sub            // [(0x01 << (0x20 - _idx)) - 0x01, is_signed, _dat, _idx]
+    dup4 shl       // [signed, is_signed, _dat, _idx]
+
+    0x01 dup1      // [0x01, 0x01, signed, is_signed, _dat, _idx]
+    dup6 shl       // [1 << _idx, 0x01, signed, is_signed, _dat, _idx]
+    sub            // [mask, signed, is_signed, _dat, _idx]
+
+    dup4 and       // [_dat & mask, signed, is_signed, _dat, _idx]
+    swap2          // [is_signed, signed, _dat & mask, _dat, _idx]
+    mul            // [is_signed ? signed : 0, _dat & mask, _dat, _idx]
+    or             // [_dat & mask | (is_signed ? signed : 0), _dat, _idx]
+
+    // TODO(clabby): Come back and fix this
+    swap2 pop pop 
+}
+
+/// @notice Computes the offset of the proof in calldata
+/// @param _proofIndex The index of the proof in the calldata.
+/// @return offset_ The offset of the proof in the calldata.
+#define macro PROOF_OFFSET() = takes (1) returns (1) {
+    // Input stack:  [_proofIndex]
+
+    0x380 mul     // [_proofIndex * 0x380]
+    0x184 add     // [(_proofIndex * 0x380) + 0x184]
+    calldatasize  // [len(calldata), offset]
+
+    dup2 0x380    // [0x380, offset, len(calldata), offset]
+    add           // [0x380 + offset, len(calldata), offset]
+    lt iszero     // [len(calldata) >= 0x380 + offset, offset]
+    cont jumpi    // [offset]
+    
+    // Store the "CalldataTooShort()" selector in memory and revert
+    // The calldata is too short.
+    0x21bbd70f    // ["CalldataTooShort()", offset]
+    0x00 mstore   // [offset]
+    0x04 0x1C     // [0x1c, 0x04, offset]
+    revert
+
+    cont:
+      // Exit stack: [offset]
+}
+
+/// @notice Computes the hash of the MIPS state
+/// @return out_ The hash of the MIPS TC state.
+#define macro OUTPUT_STATE() = takes (0) returns (1) {
+    // Input stack: []
+
+    // TODO(clabby): Tightly pack memory, this is way too far out.
+    0x500         // [to]
+    0x00          // [from, to]    
+
+    _COPY_MEM(32) // mem_root
+    _COPY_MEM(32) // preimage_key
+    _COPY_MEM(4)  // preimage offset
+    _COPY_MEM(4)  // pc
+    _COPY_MEM(4)  // next pc
+    _COPY_MEM(4)  // lo
+    _COPY_MEM(4)  // hi
+    _COPY_MEM(4)  // heap
+    _COPY_MEM(1)  // exit code
+    _COPY_MEM(1)  // exited
+    _COPY_MEM(8)  // step
+
+    // inc. from to offset to registers
+    0x20 add      // [from + 0x20, to]
+
+    // Copy the registers into memory to hash
+    0x00          // [loop_var, from + 0x20, to]
+    swap2 swap1   // [from, to, loop_var]
+    copy_registers:
+        dup3 0x1F gt   // [31 < loop_var, from, to, loop_var]
+        continue jumpi // [from, to, loop_var]
+
+        // Copy our register into memory
+        _COPY_MEM(4)
+
+        // Increment our loop variable
+        swap2 0x01 add // [loop_var + 1, to, from]
+        swap2          // [from, to, loop_var]
+        copy_registers jump
+
+    continue:
+        // After loop stack: [from, to]
+
+        // Clean up the end of the memory
+        0x00 dup3 mstore // [from, to]
+
+        0x500            // [0x500, from, to]
+        dup1             // [0x500, 0x500, from, to]
+        dup4             // [to, 0x500, 0x500, from, to]
+        sub              // [to - 0x500, 0x500, from, to]
+        sha3             // [out, from, to]
+
+        // TODO: Clean up
+        swap2 pop pop    // [out]
+}
+
+////////////////////////////////////////////////////////////////
+//                          HELPERS                           //
+////////////////////////////////////////////////////////////////
+
+/// @notice Copies `size` bytes from the `from` offset in memory to the `to` offset in memory,
+///         including trailing data / dirtied memory.
+/// SAFETY: Careful using this if the receiver of the data does not handle potentially dirtied
+///         memory correctly.
+#define macro _COPY_MEM(size) = takes (2) returns (2) {
+    // Input stack:      [from, to]
+
+    <size> 0x20 sub   // [0x20 - size, from, to]
+    dup2 add          // [from + (0x20 - size), from, to]
+    dup3 mstore       // [from, to]
+
+    0x20 add          // [from + 0x20, to]
+    swap1 <size> add  // [to + size, from + 0x20]
+    swap1             // [from, to]
+
+    // Exit stack:       [from, to]
+}
+
+/// @notice Puts a field from calldata into memory, copied from the given calldata offset to the
+///         given memory offset with size `size`.
+#define macro _PUT_FIELD(size) = takes (2) returns (2) {
+    // Input stack:      [_cd_offset, _mem_offset]
+
+    dup1 calldataload // [cd, _cd_offset, _mem_offset]
+    <size> 0x20       // [0x20, size, cd[_cd_offset:_cd_offset+0x20), _cd_offset, _mem_offset]
+    sub               // [0x20 - size, cd[_cd_offset:_cd_offset+0x20), _cd_offset, _mem_offset]
+    0x03 shl          // [(0x20 - size) << 3, cd[_cd_offset:_cd_offset+0x20), _cd_offset, _mem_offset]
+    shr               // [w, _cd_offset, _mem_offset]
+  
+    dup3              // [_mem_offset, w, _cd_offset, _mem_offset]  
+    mstore            // [_cd_offset, _mem_offset]
+
+    <size> add        // [_cd_offset + size, _mem_offset]
+    swap1 0x20 add    // [_mem_offset + 0x20, _cd_offset + size]
+    swap1             // [_cd_offset + size, _mem_offset + 0x20]
+    
+    // Exit stack:      [_cd_offset + size, _mem_offset + 0x20]
+}
+
